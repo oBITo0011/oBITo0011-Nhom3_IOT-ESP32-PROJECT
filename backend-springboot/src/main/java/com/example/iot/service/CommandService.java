@@ -30,85 +30,303 @@ public class CommandService {
     private final CommandRepository commandRepository;
     private final DeviceRepository deviceRepository;
     private final MqttGateway mqttGateway;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Gửi command tới ESP32 thông qua MQTT.
+     *
+     * Các action được hỗ trợ:
+     * - LED_ON
+     * - LED_OFF
+     * - BUZZER_ON
+     * - BUZZER_OFF
+     */
     @Transactional
     public Command sendCommand(String deviceId, String action) {
-        Device device = deviceRepository.findByDeviceId(deviceId)
-                .orElseThrow(() -> new RuntimeException("Device not found"));
+        return sendCommand(deviceId, action, Map.of());
+    }
 
-        if (!"LED_ON".equals(action) && !"LED_OFF".equals(action)) {
-            throw new IllegalArgumentException("Invalid action");
+    /**
+     * Gửi command với dữ liệu bổ sung (ví dụ ngưỡng cảnh báo) trong payload MQTT.
+     */
+    @Transactional
+    public Command sendCommand(
+            String deviceId,
+            String action,
+            Map<String, Object> commandData
+    ) {
+
+        /* =====================================================
+         * 1. KIỂM TRA DEVICE
+         * ===================================================== */
+        Device device = deviceRepository
+                .findByDeviceId(deviceId)
+                .orElseThrow(() ->
+                        new RuntimeException("Device not found: " + deviceId)
+                );
+
+        /* =====================================================
+         * 2. KIỂM TRA ACTION
+         * ===================================================== */
+
+        boolean validAction =
+                "LED_ON".equals(action)
+                        || "LED_OFF".equals(action)
+                        || "BUZZER_ON".equals(action)
+                        || "BUZZER_OFF".equals(action)
+                        || "SET_THRESHOLD".equals(action);
+
+        if (!validAction) {
+            log.warn(
+                    "Invalid command action received: {}",
+                    action
+            );
+
+            throw new IllegalArgumentException(
+                    "Invalid action: " + action
+            );
         }
 
+        /* =====================================================
+         * 3. TẠO COMMAND
+         * ===================================================== */
+
         Command command = new Command();
+
         command.setId(UUID.randomUUID());
         command.setDeviceId(deviceId);
         command.setAction(action);
         command.setStatus("PENDING");
         command.setCreatedAt(ZonedDateTime.now());
-        
-        String username = SecurityContextHolder.getContext().getAuthentication() != null 
-                ? SecurityContextHolder.getContext().getAuthentication().getName() : "system";
+
+        String username =
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication() != null
+                ? SecurityContextHolder
+                        .getContext()
+                        .getAuthentication()
+                        .getName()
+                : "system";
+
         command.setCreatedBy(username);
 
         try {
-            Map<String, Object> payloadMap = new HashMap<>();
-            payloadMap.put("commandId", command.getId().toString());
-            payloadMap.put("action", action);
-            payloadMap.put("timestamp", ZonedDateTime.now().toString());
-            String payloadJson = objectMapper.writeValueAsString(payloadMap);
+
+            /* =================================================
+             * 4. TẠO MQTT PAYLOAD
+             * ================================================= */
+
+            Map<String, Object> payloadMap =
+                    new HashMap<>();
+
+            /*
+             * commandId rất quan trọng.
+             * ESP32 sẽ dùng commandId này để ACK.
+             */
+            payloadMap.put(
+                    "commandId",
+                    command.getId().toString()
+            );
+
+            payloadMap.put(
+                    "deviceId",
+                    deviceId
+            );
+
+            payloadMap.put(
+                    "action",
+                    action
+            );
+
+            payloadMap.put(
+                    "timestamp",
+                    ZonedDateTime.now().toString()
+            );
+
+            /* Settings payload is preserved with the standard command envelope. */
+            payloadMap.putAll(commandData);
+
+            String payloadJson =
+                    objectMapper.writeValueAsString(
+                            payloadMap
+                    );
+
             command.setPayload(payloadJson);
-            
+
+            /* =================================================
+             * 5. LƯU COMMAND VÀO DATABASE
+             * ================================================= */
+
             commandRepository.save(command);
 
-            String topic = "device/" + deviceId + "/command";
-            mqttGateway.sendToMqtt(topic, 1, payloadJson);
-            
+            /* =================================================
+             * 6. GỬI MQTT
+             * ================================================= */
+
+            String topic =
+                    "device/"
+                            + deviceId
+                            + "/command";
+
+            log.info(
+                    "Sending MQTT command: topic={}, payload={}",
+                    topic,
+                    payloadJson
+            );
+
+            mqttGateway.sendToMqtt(
+                    topic,
+                    1,
+                    payloadJson
+            );
+
+            /* =================================================
+             * 7. CẬP NHẬT TRẠNG THÁI
+             * ================================================= */
+
             command.setStatus("SENT");
-            command.setSentAt(ZonedDateTime.now());
+            command.setSentAt(
+                    ZonedDateTime.now()
+            );
+
             commandRepository.save(command);
-            
-            log.info("Sent command {} to device {}", command.getId(), deviceId);
+
+            log.info(
+                    "Command {} [{}] sent to device {}",
+                    command.getId(),
+                    action,
+                    deviceId
+            );
+
             return command;
-            
+
         } catch (JsonProcessingException e) {
-            log.error("Failed to serialize command payload", e);
-            throw new RuntimeException("Failed to serialize command payload");
-        } catch (Exception e) {
+
             command.setStatus("FAILED");
             commandRepository.save(command);
-            log.error("Failed to send command via MQTT", e);
-            throw new RuntimeException("Failed to send command via MQTT");
+
+            log.error(
+                    "Failed to serialize command payload",
+                    e
+            );
+
+            throw new RuntimeException(
+                    "Failed to serialize command payload",
+                    e
+            );
+
+        } catch (Exception e) {
+
+            command.setStatus("FAILED");
+            commandRepository.save(command);
+
+            log.error(
+                    "Failed to send command via MQTT",
+                    e
+            );
+
+            throw new RuntimeException(
+                    "Failed to send command via MQTT",
+                    e
+            );
         }
     }
 
+    /**
+     * Nhận ACK từ ESP32 và cập nhật command.
+     */
     @Transactional
     public void processAck(CommandAckPayload ack) {
-        if (ack.getCommandId() == null) return;
-        
-        Optional<Command> cmdOpt = commandRepository.findById(ack.getCommandId());
+
+        if (ack == null ||
+                ack.getCommandId() == null) {
+
+            log.warn(
+                    "Received ACK without commandId"
+            );
+
+            return;
+        }
+
+        Optional<Command> cmdOpt =
+                commandRepository.findById(
+                        ack.getCommandId()
+                );
+
         if (cmdOpt.isPresent()) {
-            Command command = cmdOpt.get();
-            command.setStatus("ACKNOWLEDGED");
-            command.setAcknowledgedAt(ack.getTimestamp() != null ? ack.getTimestamp() : ZonedDateTime.now());
+
+            Command command =
+                    cmdOpt.get();
+
+            command.setStatus(
+                    "FAILED".equalsIgnoreCase(ack.getStatus())
+                            ? "FAILED"
+                            : "ACKNOWLEDGED"
+            );
+
+            command.setAcknowledgedAt(
+                    ack.getTimestamp() != null
+                            ? ack.getTimestamp()
+                            : ZonedDateTime.now()
+            );
+
             commandRepository.save(command);
-            
-            // update device led state if applicable
+
+            /*
+             * LED vẫn được đồng bộ trạng thái
+             * như thiết kế ban đầu.
+             */
             if (ack.getLed() != null) {
-                deviceRepository.findByDeviceId(ack.getDeviceId()).ifPresent(device -> {
-                    device.setLedState(ack.getLed());
-                    device.setUpdatedAt(ZonedDateTime.now());
-                    deviceRepository.save(device);
-                });
+
+                deviceRepository
+                        .findByDeviceId(
+                                ack.getDeviceId()
+                        )
+                        .ifPresent(device -> {
+
+                            device.setLedState(
+                                    ack.getLed()
+                            );
+
+                            device.setUpdatedAt(
+                                    ZonedDateTime.now()
+                            );
+
+                            deviceRepository.save(
+                                    device
+                            );
+                        });
             }
-            log.info("Command {} acknowledged", ack.getCommandId());
+
+            log.info(
+                    "Command {} [{}] acknowledged",
+                    ack.getCommandId(),
+                    ack.getAction()
+            );
+
         } else {
-            log.warn("Received ACK for unknown command ID: {}", ack.getCommandId());
+
+            log.warn(
+                    "Received ACK for unknown command ID: {}",
+                    ack.getCommandId()
+            );
         }
     }
 
-    public Page<Command> getCommandHistory(String deviceId, Pageable pageable) {
-        return commandRepository.findByDeviceIdOrderByCreatedAtDesc(deviceId, pageable);
+    /**
+     * Lấy lịch sử command.
+     */
+    public Page<Command> getCommandHistory(
+            String deviceId,
+            Pageable pageable
+    ) {
+
+        return commandRepository
+                .findByDeviceIdOrderByCreatedAtDesc(
+                        deviceId,
+                        pageable
+                );
     }
 }

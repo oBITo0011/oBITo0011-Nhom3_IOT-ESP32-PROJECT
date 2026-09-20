@@ -1,167 +1,83 @@
-import { useEffect, useState } from 'react'
-import { Card, Typography, Grid, Switch, FormControlLabel, Paper, Box } from '@mui/material'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { useEffect, useMemo, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
+import { Alert, Box, Button, Card, Chip, Divider, Grid, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
+import { Area, AreaChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import DeviceThermostatIcon from '@mui/icons-material/DeviceThermostat'
 import WaterDropIcon from '@mui/icons-material/WaterDrop'
 import WbSunnyIcon from '@mui/icons-material/WbSunny'
 import GrassIcon from '@mui/icons-material/Grass'
+import LightbulbOutlinedIcon from '@mui/icons-material/LightbulbOutlined'
+import VolumeUpOutlinedIcon from '@mui/icons-material/VolumeUpOutlined'
+import WifiIcon from '@mui/icons-material/Wifi'
+import SensorsIcon from '@mui/icons-material/Sensors'
+import TimelineIcon from '@mui/icons-material/Timeline'
 import api from '../services/api'
 import { useAuth } from '../contexts/AuthContext'
 import { format } from 'date-fns'
 
-interface Device {
-  deviceId: string
-  name: string
-  status: string
-  ledState: boolean
+interface Device { deviceId: string; name: string; status: string; ledState: boolean }
+interface Telemetry { temperature: number | null; humidity: number | null; illuminance: number | null; soilMoisture: number | null; recordedAt: string }
+interface TelemetryAverage { period: string; averageTemperature: number | null }
+interface DeviceSettings { deviceId: string; temperatureThreshold: number; soilMoistureMin: number; soilMoistureMax: number }
+type AnalyticsRange = 'hourly' | 'daily' | 'monthly' | 'yearly'
+
+const C = { blue: '#5B8CFF', blueSoft: '#EAF1FF', green: '#52D6A7', greenSoft: '#E8FBF4', purple: '#A78BFA', cyan: '#67D9FF', page: '#F5F9FF', text: '#172B4D', muted: '#718096', border: 'rgba(91,140,255,.12)', red: '#EF8F8F', redSoft: '#FFF1F1' }
+const fmt = (value: number | null | undefined, unit: string) => value === null || value === undefined || Number.isNaN(Number(value)) ? '—' : `${value} ${unit}`
+const fmtTemperature = (value: number | null | undefined) => value === null || value === undefined || Number.isNaN(Number(value)) ? '—' : `${Number(value).toFixed(1)} °C`
+const glass = { bgcolor: 'rgba(255,255,255,.78)', backdropFilter: 'blur(14px)', border: '1px solid rgba(255,255,255,.72)', boxShadow: '0 12px 40px rgba(91,140,255,.08)' }
+
+function MetricCard({ title, value, unit, icon, color, soft }: { title: string; value: number | null | undefined; unit: string; icon: React.ReactNode; color: string; soft: string }) {
+  return <Card elevation={0} sx={{ ...glass, position: 'relative', overflow: 'hidden', height: '100%', p: 2.5, borderRadius: '24px', transition: 'all .25s ease', '&:hover': { transform: 'translateY(-4px)', boxShadow: `0 18px 38px ${color}22` }, '&::after': { content: '""', position: 'absolute', width: 110, height: 110, borderRadius: '50%', right: -35, bottom: -50, bgcolor: `${color}12` } }}><Stack direction="row" justifyContent="space-between"><Box><Typography sx={{ color: C.muted, fontWeight: 700, fontSize: 13 }}>{title}</Typography><Typography sx={{ mt: 1.15, color: C.text, fontWeight: 800, fontSize: { xs: 27, md: 32 }, lineHeight: 1 }}>{fmt(value, unit)}</Typography><Stack direction="row" spacing={.65} alignItems="center" sx={{ mt: 1.35 }}><Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: color }} /><Typography variant="caption" sx={{ color: C.muted, fontWeight: 700 }}>Sensor active</Typography></Stack></Box><Box sx={{ width: 55, height: 55, display: 'grid', placeItems: 'center', borderRadius: '18px', bgcolor: soft, color, '& svg': { fontSize: 29 } }}>{icon}</Box></Stack></Card>
 }
 
-interface Telemetry {
-  temperature: number
-  humidity: number
-  illuminance: number
-  soilMoisture: number
-  recordedAt: string
+function Actuator({ icon, title, description, on, disabled, onToggle, color, soft }: { icon: React.ReactNode; title: string; description: string; on: boolean; disabled: boolean; onToggle: () => void; color: string; soft: string }) {
+  return <Box className="actuator-card" sx={{ p: 1.8, borderRadius: '18px', bgcolor: on ? soft : '#FBFDFF', border: `1px solid ${on ? `${color}45` : C.border}`, boxShadow: on ? `0 0 18px ${color}2e` : 'none', transition: 'all .25s ease' }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Stack direction="row" spacing={1.25} alignItems="center"><Box sx={{ width: 42, height: 42, display: 'grid', placeItems: 'center', borderRadius: '14px', bgcolor: on ? '#FFFFFFB8' : '#F1F5FA', color: on ? color : C.muted }}>{icon}</Box><Box><Typography sx={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{title}</Typography><Typography variant="caption" sx={{ color: C.muted, fontWeight: 600 }}>{description}</Typography></Box></Stack><Switch checked={on} onChange={onToggle} disabled={disabled} sx={{ '& .MuiSwitch-switchBase.Mui-checked': { color }, '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: color, opacity: 1 }, '& .MuiSwitch-track': { bgcolor: '#D9E2EF', opacity: 1 } }} /></Stack><Stack direction="row" justifyContent="space-between" sx={{ mt: 1.35 }}><Typography variant="caption" sx={{ color: on ? '#278A69' : C.muted, fontWeight: 800 }}>● {on ? 'ON' : 'OFF'}</Typography><Chip label={on ? 'ACTIVE' : 'STANDBY'} size="small" sx={{ height: 22, bgcolor: on ? '#FFFFFFA8' : '#F1F5FA', color: on ? color : C.muted, fontWeight: 800, fontSize: 10 }} /></Stack></Box>
 }
-
-const MetricCard = ({ title, value, unit, icon, color }: any) => (
-  <Card sx={{ height: '100%', display: 'flex', alignItems: 'center', p: 2, borderRadius: 2, boxShadow: 3 }}>
-    <Box sx={{ p: 2, borderRadius: '50%', bgcolor: `${color}.light`, color: `${color}.main`, mr: 2 }}>
-      {icon}
-    </Box>
-    <Box>
-      <Typography variant="body2" color="textSecondary">{title}</Typography>
-      <Typography variant="h5" sx={{ fontWeight: 'bold' }}>{value !== undefined ? `${value} ${unit}` : '--'}</Typography>
-    </Box>
-  </Card>
-)
 
 export default function Dashboard() {
+  const { colorMode } = useOutletContext<{ colorMode: 'day' | 'night' }>()
   const [device, setDevice] = useState<Device | null>(null)
   const [history, setHistory] = useState<Telemetry[]>([])
+  const [buzzerOn, setBuzzerOn] = useState(false)
+  const [analyticsRange, setAnalyticsRange] = useState<AnalyticsRange>('hourly')
+  const [temperatureAverages, setTemperatureAverages] = useState<TelemetryAverage[]>([])
+  const [settings, setSettings] = useState<DeviceSettings>({ deviceId: 'esp32-001', temperatureThreshold: 32, soilMoistureMin: 30, soilMoistureMax: 80 })
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
+  const [settingsSuccess, setSettingsSuccess] = useState('')
   const { role } = useAuth()
-
-  const fetchData = async () => {
-    try {
-      const devRes = await api.get('/devices/esp32-001')
-      setDevice(devRes.data)
-      const histRes = await api.get('/devices/esp32-001/telemetry?size=20')
-      setHistory(histRes.data.content.reverse())
-    } catch (err) {
-      console.error(err)
-    }
-  }
-
+  const fetchData = async () => { try { const devRes = await api.get('/devices/esp32-001'); setDevice(devRes.data); const histRes = await api.get('/devices/esp32-001/telemetry?size=20'); const content = Array.isArray(histRes.data?.content) ? histRes.data.content : []; setHistory([...content].reverse()) } catch (err) { console.error('Failed to load dashboard data:', err) } }
+  const fetchTemperatureAverages = async (range: AnalyticsRange) => { try { const response = await api.get(`/devices/esp32-001/telemetry/average/${range}`); setTemperatureAverages(Array.isArray(response.data) ? response.data : []) } catch (err) { console.error('Failed to load temperature averages:', err); setTemperatureAverages([]) } }
+  const fetchSettings = async () => { try { const response = await api.get('/devices/esp32-001/settings'); setSettings(response.data) } catch (err) { console.error('Failed to load device settings:', err); setSettingsError('Không thể tải cấu hình cảnh báo.') } }
+  useEffect(() => { fetchData(); const interval = setInterval(fetchData, 5000); return () => clearInterval(interval) }, [])
+  useEffect(() => { fetchTemperatureAverages(analyticsRange) }, [analyticsRange])
+  useEffect(() => { fetchSettings() }, [])
   useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 5000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const toggleLed = async () => {
-    if (!device) return
-    const action = device.ledState ? 'LED_OFF' : 'LED_ON'
-    try {
-      await api.post(`/devices/${device.deviceId}/commands`, { action })
-      setDevice({ ...device, ledState: !device.ledState })
-    } catch (err) {
-      console.error(err)
-    }
+    if (!settingsSuccess) return
+    const timeout = window.setTimeout(() => setSettingsSuccess(''), 4000)
+    return () => window.clearTimeout(timeout)
+  }, [settingsSuccess])
+  const sendAction = async (action: string) => { if (!device) return; await api.post(`/devices/${device.deviceId}/commands`, { action }) }
+  const toggleLed = async () => { if (!device) return; const action = device.ledState ? 'LED_OFF' : 'LED_ON'; try { await sendAction(action); setDevice((current) => current ? { ...current, ledState: !current.ledState } : current) } catch (err) { console.error('LED command failed:', err) } }
+  const toggleBuzzer = async () => { if (!device) return; const action = buzzerOn ? 'BUZZER_OFF' : 'BUZZER_ON'; try { await sendAction(action); setBuzzerOn((current) => !current) } catch (err) { console.error('Buzzer command failed:', err) } }
+  const saveSettings = async () => {
+    setSettingsError(''); setSettingsSuccess('')
+    if (!Number.isFinite(settings.temperatureThreshold) || settings.temperatureThreshold <= 0 || settings.temperatureThreshold > 100) { setSettingsError('Nhiệt độ phải nằm trong khoảng 0–100°C.'); return }
+    if (!Number.isFinite(settings.soilMoistureMin) || !Number.isFinite(settings.soilMoistureMax) || settings.soilMoistureMin < 0 || settings.soilMoistureMin > 100 || settings.soilMoistureMax < 0 || settings.soilMoistureMax > 100) { setSettingsError('Độ ẩm đất phải nằm trong khoảng 0–100%.'); return }
+    if (settings.soilMoistureMin > settings.soilMoistureMax) { setSettingsError('Độ ẩm tối thiểu không được lớn hơn tối đa.'); return }
+    try { setSettingsSaving(true); const response = await api.put('/devices/esp32-001/settings', { temperatureThreshold: settings.temperatureThreshold, soilMoistureMin: settings.soilMoistureMin, soilMoistureMax: settings.soilMoistureMax }); setSettings(response.data); setSettingsSuccess('Đã lưu cấu hình cảnh báo.') } catch (err) { console.error('Failed to save device settings:', err); setSettingsError('Không thể lưu cấu hình.') } finally { setSettingsSaving(false) }
   }
-
-  if (!device) return <Typography>Loading dashboard...</Typography>
-
-  const chartData = history.map(t => ({
-    time: format(new Date(t.recordedAt), 'HH:mm:ss'),
-    temperature: t.temperature,
-    humidity: t.humidity,
-    illuminance: t.illuminance,
-    soilMoisture: t.soilMoisture
-  }))
-
-  const latest = history[history.length - 1] || {} as any
-
-  return (
-    <Box>
-      <Typography variant="h4" mb={3} fontWeight="bold">Environment Overview</Typography>
-      
-      {/* Metrics Row */}
-      <Grid container spacing={3} mb={4}>
-        <Grid item xs={12} sm={6} md={3}>
-          <MetricCard title="Temperature" value={latest.temperature} unit="°C" icon={<DeviceThermostatIcon fontSize="large" />} color="error" />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <MetricCard title="Humidity" value={latest.humidity} unit="%" icon={<WaterDropIcon fontSize="large" />} color="info" />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <MetricCard title="Light Level" value={latest.illuminance} unit="lux" icon={<WbSunnyIcon fontSize="large" />} color="warning" />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <MetricCard title="Soil Moisture" value={latest.soilMoisture} unit="%" icon={<GrassIcon fontSize="large" />} color="success" />
-        </Grid>
-      </Grid>
-
-      <Grid container spacing={3}>
-        {/* Charts */}
-        <Grid item xs={12} lg={8}>
-          <Paper sx={{ p: 3, borderRadius: 2, boxShadow: 3 }}>
-            <Typography variant="h6" mb={2} fontWeight="bold">Real-time Telemetry</Typography>
-            <div style={{ height: 350 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="time" />
-                  <YAxis yAxisId="left" />
-                  <YAxis yAxisId="right" orientation="right" />
-                  <Tooltip contentStyle={{ borderRadius: 8 }} />
-                  <Legend />
-                  <Line yAxisId="left" type="monotone" dataKey="temperature" stroke="#d32f2f" name="Temp (°C)" strokeWidth={2} dot={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="humidity" stroke="#0288d1" name="Humidity (%)" strokeWidth={2} dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="soilMoisture" stroke="#2e7d32" name="Soil (%)" strokeWidth={2} dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="illuminance" stroke="#ed6c02" name="Light (lux)" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </Paper>
-        </Grid>
-
-        {/* Device Control */}
-        <Grid item xs={12} lg={4}>
-          <Paper sx={{ p: 3, borderRadius: 2, boxShadow: 3, height: '100%' }}>
-            <Typography variant="h6" mb={2} fontWeight="bold">Device Control</Typography>
-            <Box sx={{ mb: 2 }}>
-              <Typography variant="subtitle2" color="textSecondary">Device Name</Typography>
-              <Typography variant="body1">{device.name}</Typography>
-            </Box>
-            <Box sx={{ mb: 3 }}>
-              <Typography variant="subtitle2" color="textSecondary">Connection Status</Typography>
-              <Typography 
-                variant="body1" 
-                sx={{ 
-                  color: device.status === 'ONLINE' ? 'success.main' : 'error.main',
-                  fontWeight: 'bold'
-                }}
-              >
-                {device.status}
-              </Typography>
-            </Box>
-            
-            <Box sx={{ p: 2, bgcolor: '#f5f5f5', borderRadius: 2 }}>
-              <Typography variant="subtitle2" mb={1}>Actuators</Typography>
-              {role !== 'VIEWER' ? (
-                <FormControlLabel
-                  control={<Switch checked={device.ledState} onChange={toggleLed} color="primary" />}
-                  label={`Main LED / Relay: ${device.ledState ? 'ON' : 'OFF'}`}
-                />
-              ) : (
-                <Typography color="textSecondary">
-                  Main LED / Relay: <b>{device.ledState ? 'ON' : 'OFF'}</b> (Read-only)
-                </Typography>
-              )}
-            </Box>
-          </Paper>
-        </Grid>
-      </Grid>
-    </Box>
-  )
+  const chartData = useMemo(() => history.map((t) => ({ time: format(new Date(t.recordedAt), 'HH:mm:ss'), temperature: t.temperature, humidity: t.humidity, illuminance: t.illuminance, soilMoisture: t.soilMoisture })), [history])
+  const averageChartData = useMemo(() => temperatureAverages.map((item) => ({ ...item, label: item.period ? format(new Date(item.period), analyticsRange === 'hourly' ? 'HH:mm' : analyticsRange === 'daily' ? 'dd/MM' : analyticsRange === 'monthly' ? 'MM/yyyy' : 'yyyy') : '—' })), [temperatureAverages, analyticsRange])
+  if (!device) return <Box sx={{ minHeight: '70vh', display: 'grid', placeItems: 'center', px: 2, bgcolor: C.page }}><Paper elevation={0} sx={{ ...glass, px: 4, py: 3, borderRadius: 4, textAlign: 'center' }}><SensorsIcon sx={{ fontSize: 42, color: C.blue, mb: 1 }} /><Typography sx={{ fontWeight: 800, color: C.text, mb: .5 }}>Loading dashboard...</Typography><Typography variant="body2" sx={{ color: C.muted }}>Đang kết nối tới thiết bị ESP32-001</Typography></Paper></Box>
+  const latest = history[history.length - 1] || ({} as Telemetry); const online = device.status === 'ONLINE'; const canControl = role !== 'VIEWER' && online; const canEditSettings = role === 'ADMIN' || role === 'OPERATOR'; const updatedAt = latest.recordedAt ? format(new Date(latest.recordedAt), 'HH:mm:ss') : '—'; const updatedDateTime = latest.recordedAt ? format(new Date(latest.recordedAt), 'dd/MM/yyyy • HH:mm:ss') : 'Chưa có dữ liệu'; const values = averageChartData.flatMap((x) => x.averageTemperature === null || x.averageTemperature === undefined ? [] : [Number(x.averageTemperature)]); const average = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null
+  const rangeLabels: Record<AnalyticsRange, string> = { hourly: 'Hour', daily: 'Day', monthly: 'Month', yearly: 'Year' }
+  return <Box className={`iot-dashboard ${colorMode}`} sx={{ minHeight: '100%', px: { xs: 1.25, sm: 2.5, md: 3.5 }, py: { xs: 1.5, md: 3 }, bgcolor: C.page, backgroundImage: 'radial-gradient(circle at 5% 0%, rgba(143,179,255,.28), transparent 23%), radial-gradient(circle at 96% 22%, rgba(139,232,200,.25), transparent 25%)' }}><Box sx={{ maxWidth: 1400, mx: 'auto' }}>
+    <Paper className="hero-card" elevation={0} sx={{ ...glass, position: 'relative', overflow: 'hidden', p: { xs: 2.5, md: 3.5 }, mb: 3, borderRadius: '28px', background: 'linear-gradient(135deg, #EAF1FF 0%, #F5F9FF 45%, #E8FBF4 100%)' }}><Box sx={{ position: 'absolute', width: 210, height: 210, borderRadius: '50%', right: -55, top: -85, bgcolor: 'rgba(143,179,255,.22)' }} /><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={2.5} sx={{ position: 'relative' }}><Stack direction="row" spacing={1.7} alignItems="center"><Box sx={{ width: { xs: 56, md: 64 }, height: { xs: 56, md: 64 }, display: 'grid', placeItems: 'center', borderRadius: '20px', bgcolor: '#FFFFFFB8', color: C.blue, boxShadow: '0 10px 25px rgba(91,140,255,.14)' }}><SensorsIcon sx={{ fontSize: 33 }} /></Box><Box><Typography sx={{ color: C.blue, fontWeight: 800, fontSize: 12, letterSpacing: 1.5 }}>IOT CONTROL CENTER</Typography><Typography sx={{ mt: .25, color: C.text, fontWeight: 800, fontSize: { xs: 24, md: 31 } }}>Environment Monitoring</Typography><Typography sx={{ mt: .65, color: C.muted, fontWeight: 500, fontSize: 14 }}>Giám sát môi trường và điều khiển thiết bị theo thời gian thực</Typography></Box></Stack><Paper className="device-status" elevation={0} sx={{ p: 1.5, minWidth: 178, borderRadius: '18px', bgcolor: '#FFFFFFB3', border: `1px solid ${online ? '#C8F3E3' : '#FFD3D3'}` }}><Stack direction="row" spacing={1} alignItems="center"><Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: online ? C.green : C.red, animation: online ? 'iotPulse 2s infinite' : 'none' }} /><Box><Typography sx={{ color: online ? '#278A69' : '#B64D4D', fontWeight: 800, fontSize: 12 }}>{online ? 'ONLINE' : 'OFFLINE'}</Typography><Typography sx={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{device.deviceId}</Typography><Typography variant="caption" sx={{ color: C.muted, fontWeight: 600 }}>{online ? 'Connected' : 'Disconnected'}</Typography></Box></Stack></Paper></Stack></Paper>
+    <Grid container spacing={2.25} sx={{ mb: 3 }}><Grid item xs={12} sm={6} lg={3}><MetricCard title="Temperature" value={latest.temperature} unit="°C" icon={<DeviceThermostatIcon />} color={C.blue} soft={C.blueSoft} /></Grid><Grid item xs={12} sm={6} lg={3}><MetricCard title="Humidity" value={latest.humidity} unit="%" icon={<WaterDropIcon />} color={C.cyan} soft="#EBF9FF" /></Grid><Grid item xs={12} sm={6} lg={3}><MetricCard title="Light" value={latest.illuminance} unit="lux" icon={<WbSunnyIcon />} color={C.purple} soft="#F4F0FF" /></Grid><Grid item xs={12} sm={6} lg={3}><MetricCard title="Soil Moisture" value={latest.soilMoisture} unit="%" icon={<GrassIcon />} color={C.green} soft={C.greenSoft} /></Grid></Grid>
+    <Grid container spacing={2.25} sx={{ mb: 3 }}><Grid item xs={12} lg={8}><Paper elevation={0} sx={{ ...glass, p: { xs: 2, md: 3 }, borderRadius: '24px', height: '100%' }}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ mb: 2.25 }}><Box><Typography sx={{ color: C.text, fontSize: 20, fontWeight: 800 }}>Live Environment</Typography><Typography variant="body2" sx={{ color: C.muted }}>Dữ liệu cảm biến theo thời gian thực · {updatedDateTime}</Typography></Box><Chip label={`LIVE · ${updatedAt}`} size="small" sx={{ bgcolor: C.greenSoft, color: '#278A69', fontWeight: 800 }} /></Stack><Divider sx={{ borderColor: C.border, mb: 1.5 }} /><Box sx={{ height: { xs: 320, md: 390 } }}><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 8, right: 10, left: -10, bottom: 5 }}><CartesianGrid strokeDasharray="4 5" vertical={false} stroke="#DDE8F5" /><XAxis dataKey="time" tick={{ fontSize: 11, fill: C.muted }} axisLine={false} tickLine={false} minTickGap={22} /><YAxis yAxisId="left" tick={{ fontSize: 11, fill: C.muted }} axisLine={false} tickLine={false} width={34} /><YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: C.muted }} axisLine={false} tickLine={false} width={36} /><Tooltip contentStyle={{ borderRadius: 16, border: '1px solid rgba(255,255,255,.8)', background: 'rgba(255,255,255,.92)', boxShadow: '0 12px 30px rgba(91,140,255,.16)', fontSize: 12 }} /><Legend wrapperStyle={{ paddingTop: 12, fontSize: 12 }} /><Line yAxisId="left" type="monotone" dataKey="temperature" stroke={C.blue} name="Temperature (°C)" strokeWidth={3} dot={false} activeDot={{ r: 6 }} connectNulls /><Line yAxisId="left" type="monotone" dataKey="humidity" stroke={C.cyan} name="Humidity (%)" strokeWidth={3} dot={false} activeDot={{ r: 6 }} connectNulls /><Line yAxisId="right" type="monotone" dataKey="soilMoisture" stroke={C.green} name="Soil (%)" strokeWidth={3} dot={false} activeDot={{ r: 6 }} connectNulls /><Line yAxisId="right" type="monotone" dataKey="illuminance" stroke={C.purple} name="Light (lux)" strokeWidth={3} dot={false} activeDot={{ r: 6 }} connectNulls /></LineChart></ResponsiveContainer></Box></Paper></Grid><Grid item xs={12} lg={4}><Paper elevation={0} sx={{ ...glass, p: { xs: 2, md: 2.5 }, borderRadius: '24px', height: '100%' }}><Stack direction="row" justifyContent="space-between" sx={{ mb: 2 }}><Box><Typography sx={{ color: C.text, fontSize: 20, fontWeight: 800 }}>Device Control</Typography><Typography variant="body2" sx={{ color: C.muted }}>{device.deviceId}</Typography></Box><WifiIcon sx={{ color: online ? C.green : C.red }} /></Stack><Typography variant="caption" sx={{ display: 'block', p: 1.25, mb: 2, borderRadius: '14px', bgcolor: online ? C.greenSoft : C.redSoft, color: online ? '#278A69' : '#B64D4D', fontWeight: 800 }}>● {online ? 'Connected' : 'Offline'} · {device.name}</Typography><Stack spacing={1.25}><Actuator icon={<LightbulbOutlinedIcon />} title="LED" description="Main lighting" on={!!device.ledState} disabled={!canControl} onToggle={toggleLed} color={C.blue} soft={C.blueSoft} /><Actuator icon={<VolumeUpOutlinedIcon />} title="Buzzer" description="Alert sound" on={buzzerOn} disabled={!canControl} onToggle={toggleBuzzer} color={C.purple} soft="#F4F0FF" /></Stack>{!canControl && <Typography variant="caption" sx={{ display: 'block', mt: 1.7, color: online ? C.muted : '#B64D4D', fontWeight: 600 }}>{online ? 'Tài khoản VIEWER chỉ được xem dữ liệu, không thể điều khiển thiết bị.' : 'Thiết bị đang OFFLINE nên các nút điều khiển tạm thời bị khóa.'}</Typography>}</Paper></Grid></Grid>
+    <Paper elevation={0} sx={{ ...glass, p: { xs: 2, md: 3 }, borderRadius: '24px', mb: 2.25 }}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={2} sx={{ mb: 2.25 }}><Stack direction="row" spacing={1} alignItems="center"><Box sx={{ width: 38, height: 38, display: 'grid', placeItems: 'center', borderRadius: '13px', bgcolor: C.blueSoft, color: C.blue }}><TimelineIcon /></Box><Box><Typography sx={{ color: C.text, fontSize: 20, fontWeight: 800 }}>Temperature Analytics</Typography><Typography variant="body2" sx={{ color: C.muted }}>Phân tích nhiệt độ trung bình theo thời gian</Typography></Box></Stack><Stack direction="row" spacing={.75} flexWrap="wrap" useFlexGap>{(['hourly', 'daily', 'monthly', 'yearly'] as AnalyticsRange[]).map((range) => <Button key={range} onClick={() => setAnalyticsRange(range)} size="small" sx={{ minWidth: 66, px: 1.5, py: .7, borderRadius: '12px', textTransform: 'capitalize', fontWeight: 800, color: analyticsRange === range ? C.text : C.muted, bgcolor: analyticsRange === range ? 'transparent' : '#F5F9FF', backgroundImage: analyticsRange === range ? 'linear-gradient(135deg, #8FB3FF, #8BE8C8)' : 'none' }}>{rangeLabels[range]}</Button>)}</Stack></Stack><Box sx={{ height: { xs: 280, md: 330 } }}><ResponsiveContainer width="100%" height="100%"><AreaChart data={averageChartData} margin={{ top: 8, right: 10, left: -12, bottom: 4 }}><defs><linearGradient id="avgFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.blue} stopOpacity={.42} /><stop offset="100%" stopColor={C.blue} stopOpacity={0} /></linearGradient></defs><CartesianGrid strokeDasharray="4 5" vertical={false} stroke="#DDE8F5" /><XAxis dataKey="label" tick={{ fontSize: 12, fill: C.muted }} axisLine={false} tickLine={false} minTickGap={24} /><YAxis tick={{ fontSize: 12, fill: C.muted }} axisLine={false} tickLine={false} width={38} unit="°" /><Tooltip formatter={(value: number) => [`${value} °C`, 'Average Temperature']} contentStyle={{ borderRadius: 16, border: '1px solid rgba(255,255,255,.8)', background: 'rgba(255,255,255,.92)', boxShadow: '0 12px 30px rgba(91,140,255,.16)' }} /><Area type="monotone" dataKey="averageTemperature" name="Temperature Average" stroke={C.blue} strokeWidth={3} fill="url(#avgFill)" activeDot={{ r: 6 }} connectNulls /></AreaChart></ResponsiveContainer></Box><Grid container spacing={1.5} sx={{ mt: .5 }}>{[['AVERAGE', average, C.blueSoft], ['MINIMUM', values.length ? Math.min(...values) : null, '#F3F8FF'], ['MAXIMUM', values.length ? Math.max(...values) : null, C.greenSoft]].map(([label, value, background]) => <Grid item xs={12} sm={4} key={label as string}><Box sx={{ p: 1.5, borderRadius: '16px', bgcolor: background as string }}><Typography variant="caption" sx={{ color: C.muted, fontWeight: 700 }}>{label as string}</Typography><Typography sx={{ color: C.text, fontWeight: 800, fontSize: 22 }}>{fmtTemperature(value as number | null)}</Typography></Box></Grid>)}</Grid></Paper>
+    <Paper elevation={0} sx={{ ...glass, p: { xs: 2, md: 3 }, borderRadius: '24px', mb: 2.25 }}><Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}><Box sx={{ width: 38, height: 38, display: 'grid', placeItems: 'center', borderRadius: '13px', bgcolor: C.greenSoft, color: C.green }}>⚙</Box><Box><Typography sx={{ color: C.text, fontSize: 20, fontWeight: 800 }}>Cấu hình cảnh báo</Typography><Typography variant="body2" sx={{ color: C.muted }}>Ngưỡng cảnh báo được đồng bộ tới ESP32 qua MQTT</Typography></Box></Stack>{settingsError && <Alert severity="error" sx={{ mb: 1.5 }}>{settingsError}</Alert>}{settingsSuccess && <Alert severity="success" sx={{ mb: 1.5 }}>{settingsSuccess}</Alert>}<Grid container spacing={1.5}><Grid item xs={12} md={4}><TextField fullWidth disabled={!canEditSettings || settingsSaving} label="Nhiệt độ cảnh báo" type="number" value={settings.temperatureThreshold} onChange={(event) => setSettings((current) => ({ ...current, temperatureThreshold: Number(event.target.value) }))} InputProps={{ endAdornment: <Typography variant="caption">°C</Typography> }} inputProps={{ min: 0, max: 100, step: .1 }} /></Grid><Grid item xs={12} md={4}><TextField fullWidth disabled={!canEditSettings || settingsSaving} label="Độ ẩm đất tối thiểu" type="number" value={settings.soilMoistureMin} onChange={(event) => setSettings((current) => ({ ...current, soilMoistureMin: Number(event.target.value) }))} InputProps={{ endAdornment: <Typography variant="caption">%</Typography> }} inputProps={{ min: 0, max: 100, step: .1 }} /></Grid><Grid item xs={12} md={4}><TextField fullWidth disabled={!canEditSettings || settingsSaving} label="Độ ẩm đất tối đa" type="number" value={settings.soilMoistureMax} onChange={(event) => setSettings((current) => ({ ...current, soilMoistureMax: Number(event.target.value) }))} InputProps={{ endAdornment: <Typography variant="caption">%</Typography> }} inputProps={{ min: 0, max: 100, step: .1 }} /></Grid></Grid><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} spacing={1.5} sx={{ mt: 2 }}><Typography variant="caption" sx={{ color: C.muted, fontWeight: 600 }}>{canEditSettings ? 'Lưu sẽ gửi lệnh SET_THRESHOLD với QoS 1 đến thiết bị.' : 'Tài khoản VIEWER chỉ có thể xem cấu hình.'}</Typography><Button disabled={!canEditSettings || settingsSaving} onClick={saveSettings} variant="contained" sx={{ px: 2.25, py: 1, borderRadius: '12px', textTransform: 'none', fontWeight: 800, color: C.text, boxShadow: 'none', background: 'linear-gradient(135deg, #8FB3FF, #8BE8C8)', '&:hover': { boxShadow: '0 8px 20px rgba(91,140,255,.24)' } }}>{settingsSaving ? 'Đang lưu...' : 'Lưu cấu hình'}</Button></Stack></Paper>
+    <Paper elevation={0} sx={{ p: 1.4, borderRadius: '18px', bgcolor: 'rgba(255,255,255,.55)', border: `1px solid ${C.border}` }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', sm: 'center' }}><Stack direction="row" spacing={.8} alignItems="center"><WifiIcon sx={{ color: online ? C.green : C.red, fontSize: 19 }} /><Typography sx={{ color: C.text, fontWeight: 800, fontSize: 13 }}>MQTT Connection</Typography></Stack><Typography variant="caption" sx={{ color: C.muted, fontWeight: 700 }}>{device.deviceId}</Typography><Typography variant="caption" sx={{ color: online ? '#278A69' : '#B64D4D', fontWeight: 800 }}>● {online ? 'Connected' : 'Offline'}</Typography><Typography variant="caption" sx={{ color: C.muted, fontWeight: 600, ml: { sm: 'auto' } }}>device/esp32-001/telemetry</Typography></Stack></Paper>
+  </Box><Box component="style">{'@keyframes iotPulse { 0% { box-shadow: 0 0 0 0 rgba(82,214,167,.34); } 70% { box-shadow: 0 0 0 8px rgba(82,214,167,0); } 100% { box-shadow: 0 0 0 0 rgba(82,214,167,0); } } .iot-dashboard.night { background-color: #0E1C34 !important; background-image: radial-gradient(circle at 5% 0%, rgba(91,140,255,.18), transparent 24%), radial-gradient(circle at 96% 22%, rgba(82,214,167,.13), transparent 25%) !important; } .iot-dashboard.night .MuiPaper-root, .iot-dashboard.night .MuiCard-root { background-color: rgba(20,40,70,.88) !important; border-color: rgba(143,179,255,.18) !important; box-shadow: 0 12px 40px rgba(0,0,0,.2) !important; } .iot-dashboard.night .MuiPaper-root .MuiTypography-root, .iot-dashboard.night .MuiCard-root .MuiTypography-root { color: #E6F0FF !important; } .iot-dashboard.night .hero-card { background: linear-gradient(135deg, #162E56 0%, #10213D 55%, #17364A 100%) !important; } .iot-dashboard.night .hero-card .MuiTypography-root { color: #EAF1FF !important; } .iot-dashboard.night .device-status { background: rgba(25,55,82,.92) !important; } .iot-dashboard.night .actuator-card { background: rgba(28,53,88,.9) !important; border-color: rgba(143,179,255,.22) !important; } .iot-dashboard.night .MuiPaper-root:has(.actuator-card) { height: auto !important; align-self: start; } .iot-dashboard.night .MuiPaper-root:has(.actuator-card) > .MuiTypography-root { background: rgba(27,69,82,.94) !important; color: #D8FFF1 !important; border: 1px solid rgba(82,214,167,.3) !important; } .iot-dashboard.night .MuiGrid-item > .MuiBox-root { background: rgba(237,245,255,.96) !important; } .iot-dashboard.night .MuiGrid-item > .MuiBox-root .MuiTypography-root { color: #172B4D !important; } .iot-dashboard.night .MuiInputBase-input { color: #E6F0FF !important; } .iot-dashboard.night .MuiInputLabel-root, .iot-dashboard.night .MuiOutlinedInput-notchedOutline { color: #B9CDF0 !important; border-color: rgba(143,179,255,.4) !important; } .iot-dashboard.night .MuiDivider-root { border-color: rgba(143,179,255,.18) !important; }'}</Box></Box>
 }

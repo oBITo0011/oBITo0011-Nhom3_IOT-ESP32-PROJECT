@@ -14,8 +14,8 @@ export default function Login() {
     try {
       const res = await api.post('/auth/login', { username, password })
       login(res.data.accessToken, res.data.role)
-    } catch (err) {
-      setError('Login failed')
+    } catch {
+      setError('Login failed. Check API URL and backend status.')
     }
   }
 

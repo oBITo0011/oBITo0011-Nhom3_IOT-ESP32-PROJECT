@@ -1,0 +1,11 @@
+{
+  "name": "nhom3-iot-esp32-project",
+  "private": true,
+  "description": "Vercel builds the React dashboard in web-react/. Backend, MQTT, and database cannot run on Vercel.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --prefix web-react"
+  }
+}
